@@ -117,6 +117,9 @@ def create_prunepeft_config(model, **kwargs):
         # Optional heterogeneous LoRA settings (regex->value maps)
         "rank_pattern": _parse_json_dict(kwargs.get("rank_pattern", None), field_name="rank_pattern"),
         "alpha_pattern": _parse_json_dict(kwargs.get("alpha_pattern", None), field_name="alpha_pattern"),
+        # Optional zero-padding to unify LoRA ranks
+        "zero_pad_to_max_rank": bool(kwargs.get("zero_pad_to_max_rank", False)),
+        "zero_pad_rank": int(kwargs.get("zero_pad_rank", 0) or 0),
     }
 
     # Add parameters for all adapter types
@@ -156,6 +159,8 @@ def main(
     max_length=1024,
     max_steps=0,
     reload_after_train=True,
+    zero_pad_to_max_rank=False,
+    zero_pad_rank=0,
 ):
     """
     Main training function for PrunePEFT.
@@ -228,6 +233,8 @@ def main(
         bias=bias,
         rank_pattern=rank_pattern,
         alpha_pattern=alpha_pattern,
+        zero_pad_to_max_rank=bool(zero_pad_to_max_rank),
+        zero_pad_rank=int(zero_pad_rank) if str(zero_pad_rank).strip() else 0,
     )
 
     logger.info("PrunePEFT (%s) 配置:", ",".join(adapter_types).upper())

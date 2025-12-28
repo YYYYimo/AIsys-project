@@ -72,6 +72,24 @@ class PrunePEFTConfig(PeftConfig):
             "help": "List of layer indices to apply LoRA adapter (linear-level). If None, applies to all layers."
         },
     )
+    zero_pad_to_max_rank: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "If True, allocate all LoRA A/B matrices with a unified rank (the maximum rank used by this adapter), "
+                "and zero-pad smaller ranks to that size. This makes LoRA matmul shapes uniform across layers."
+            )
+        },
+    )
+    zero_pad_rank: int = field(
+        default=0,
+        metadata={
+            "help": (
+                "If >0, force the unified (padded) LoRA rank to this value. "
+                "If 0 and zero_pad_to_max_rank=True, the max rank from rank_pattern / r is used."
+            )
+        },
+    )
     loftq_config: Union[LoftQConfig, dict] = field(
         default_factory=dict,
         metadata={

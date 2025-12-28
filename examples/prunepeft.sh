@@ -29,6 +29,8 @@ SEED=42
 BIAS="none"
 MAX_LENGTH=256
 MAX_STEPS=10
+ZERO_PAD_TO_MAX_RANK=true   # set false for baseline
+ZERO_PAD_RANK=0             # 0 -> use max(rank_pattern, lora_rank); >0 -> force
 
 # Heterogeneous LoRA ranks (regex -> rank). Note: keys are regex strings, so we escape '.' as '\\.'.
 RANK_PATTERN='{
@@ -55,6 +57,8 @@ CMD="python examples/prunepeft.py \
     --rank_pattern='$RANK_PATTERN' \
     --max_length=$MAX_LENGTH \
     --max_steps=$MAX_STEPS \
+    --zero_pad_to_max_rank=$ZERO_PAD_TO_MAX_RANK \
+    --zero_pad_rank=$ZERO_PAD_RANK \
     --sample_size=$SAMPLE_SIZE \
     --seed=$SEED \
     --bias=$BIAS"

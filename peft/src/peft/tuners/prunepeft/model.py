@@ -600,6 +600,23 @@ class PrunePEFTModel(BaseTuner):
             if len(effective_adapter_types) == 1:
                 adapter_type = effective_adapter_types[0]
                 if adapter_type == "lora":
+                    # Optional: unify LoRA ranks by zero-padding to a fixed rank (for kernel shape uniformity)
+                    pad_rank = 0
+                    if getattr(prunepeft_config, "zero_pad_to_max_rank", False):
+                        cfg_rank = int(getattr(prunepeft_config, "zero_pad_rank", 0) or 0)
+                        if cfg_rank > 0:
+                            pad_rank = cfg_rank
+                        else:
+                            ranks = []
+                            if getattr(prunepeft_config, "rank_pattern", None):
+                                try:
+                                    ranks.extend([int(v) for v in prunepeft_config.rank_pattern.values()])
+                                except Exception:
+                                    pass
+                            ranks.append(int(getattr(prunepeft_config, "r", r)))
+                            pad_rank = max(ranks)
+                        pad_rank = max(int(r), int(pad_rank))
+
                     lora_kwargs = {
                         "r": r,
                         "lora_alpha": alpha,
@@ -610,6 +627,8 @@ class PrunePEFTModel(BaseTuner):
                         "use_dora": prunepeft_config.use_dora,
                         "ephemeral_gpu_offload": prunepeft_config.runtime_config.ephemeral_gpu_offload,
                         "bias": bias,
+                        # consumed by peft/tuners/prunepeft/lora_layer.py
+                        "zero_pad_rank": pad_rank,
                     }
                     new_module = self._create_new_module_for_type(prunepeft_config, adapter_name, target, "lora", **lora_kwargs)
                 elif adapter_type == "bottleneck":

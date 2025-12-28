@@ -106,8 +106,15 @@ class LoraLayer(BaseTunerLayer):
         if r <= 0:
             raise ValueError(f"`r` should be a positive integer value but the value passed is {r}")
 
+        # Requested (true) rank
+        r = int(r)
         self.r[adapter_name] = r
         self.lora_alpha[adapter_name] = lora_alpha
+
+        # Optional padded rank (for uniform matmul shapes)
+        zero_pad_rank = int(self.kwargs.get("zero_pad_rank", 0) or 0)
+        padded_r = max(r, zero_pad_rank) if zero_pad_rank > 0 else r
+
         if lora_dropout > 0.0:
             lora_dropout_layer = nn.Dropout(p=lora_dropout)
         else:
@@ -115,8 +122,8 @@ class LoraLayer(BaseTunerLayer):
 
         self.lora_dropout.update(nn.ModuleDict({adapter_name: lora_dropout_layer}))
         # Actual trainable parameters
-        self.lora_A[adapter_name] = nn.Linear(self.in_features, r, bias=False)
-        self.lora_B[adapter_name] = nn.Linear(r, self.out_features, bias=False)
+        self.lora_A[adapter_name] = nn.Linear(self.in_features, padded_r, bias=False)
+        self.lora_B[adapter_name] = nn.Linear(padded_r, self.out_features, bias=False)
         if use_rslora:
             self.scaling[adapter_name] = lora_alpha / math.sqrt(r)
         else:
@@ -148,6 +155,33 @@ class LoraLayer(BaseTunerLayer):
 
         self.set_adapter(self.active_adapters)
 
+        # If padded rank is used, keep padded parts exactly zero by masking gradients.
+        # This makes the computation equivalent to the original r-rank LoRA (assuming weight_decay=0).
+        if padded_r > r:
+            # one-time hook per (module, adapter_name)
+            hook_key = f"zero_pad_hook::{adapter_name}"
+            if hook_key not in self._caches:
+                # Start with strict zeros in padded regions
+                with torch.no_grad():
+                    self.lora_A[adapter_name].weight.data[r:, :].zero_()
+                    self.lora_B[adapter_name].weight.data[:, r:].zero_()
+
+                def _mask_A(g, rr=r):
+                    if g is None:
+                        return g
+                    g[rr:, :] = 0
+                    return g
+
+                def _mask_B(g, rr=r):
+                    if g is None:
+                        return g
+                    g[:, rr:] = 0
+                    return g
+
+                self.lora_A[adapter_name].weight.register_hook(_mask_A)
+                self.lora_B[adapter_name].weight.register_hook(_mask_B)
+                self._caches[hook_key] = True
+
     def reset_lora_parameters(self, adapter_name, init_lora_weights):
         if init_lora_weights is False:
             return
@@ -156,17 +190,46 @@ class LoraLayer(BaseTunerLayer):
             if init_lora_weights is True:
                 # initialize A the same way as the default for nn.Linear and B to zero
                 # https://github.com/microsoft/LoRA/blob/a0a92e0f26c067cf94747bdbf1ce73793fa44d19/loralib/layers.py#L124
-                nn.init.kaiming_uniform_(self.lora_A[adapter_name].weight, a=math.sqrt(5))
+                r_eff = int(self.r[adapter_name])
+                with torch.no_grad():
+                    nn.init.kaiming_uniform_(self.lora_A[adapter_name].weight[:r_eff, :], a=math.sqrt(5))
+                    if self.lora_A[adapter_name].weight.shape[0] > r_eff:
+                        self.lora_A[adapter_name].weight[r_eff:, :].zero_()
             elif init_lora_weights.lower() == "gaussian":
-                nn.init.normal_(self.lora_A[adapter_name].weight, std=1 / self.r[adapter_name])
+                r_eff = int(self.r[adapter_name])
+                with torch.no_grad():
+                    nn.init.normal_(self.lora_A[adapter_name].weight[:r_eff, :], std=1 / r_eff)
+                    if self.lora_A[adapter_name].weight.shape[0] > r_eff:
+                        self.lora_A[adapter_name].weight[r_eff:, :].zero_()
             else:
                 raise ValueError(f"Unknown initialization {init_lora_weights=}")
             nn.init.zeros_(self.lora_B[adapter_name].weight)
+            r_eff = int(self.r[adapter_name])
+            if self.lora_B[adapter_name].weight.shape[1] > r_eff:
+                with torch.no_grad():
+                    self.lora_B[adapter_name].weight[:, r_eff:].zero_()
         if adapter_name in self.lora_embedding_A.keys():
             # Initialize A to zeros and B the same way as the default for nn.Embedding, see:
             # https://github.com/microsoft/LoRA/blob/4c0333854cb905966f8cc4e9a74068c1e507c7b7/loralib/layers.py#L59-L60
             nn.init.zeros_(self.lora_embedding_A[adapter_name])
             nn.init.normal_(self.lora_embedding_B[adapter_name])
+
+    def _assign_lora_weights_with_padding(self, adapter_name: str, A: torch.Tensor, B: torch.Tensor) -> None:
+        """
+        Assign LoRA weights for an adapter, supporting padded-rank allocation.
+        A: [r, in_features], B: [out_features, r]
+        Stored weights may be [padded_r, in_features] / [out_features, padded_r]
+        """
+        r_eff = int(self.r[adapter_name])
+        A = A.contiguous()
+        B = B.contiguous()
+        with torch.no_grad():
+            A_store = self.lora_A[adapter_name].weight
+            B_store = self.lora_B[adapter_name].weight
+            A_store.zero_()
+            B_store.zero_()
+            A_store[:r_eff, :].copy_(A.to(device=A_store.device, dtype=A_store.dtype))
+            B_store[:, :r_eff].copy_(B.to(device=B_store.device, dtype=B_store.dtype))
 
     def lora_ga_init(self, adapter_name):
         def get_float_weight(model: torch.nn.Module):
@@ -275,8 +338,7 @@ class LoraLayer(BaseTunerLayer):
 
         weight.data -= offset
 
-        self.lora_A[adapter_name].weight.data = A.contiguous()
-        self.lora_B[adapter_name].weight.data = B.contiguous()
+        self._assign_lora_weights_with_padding(adapter_name, A, B)
         if not quant_flag:
             weight = weight.data
             weight = weight.to(dtype)
@@ -314,8 +376,7 @@ class LoraLayer(BaseTunerLayer):
 
         Qr, Rr = Q[:, :r], R[:r]
 
-        self.lora_A[adapter_name].weight.data = Rr.contiguous()
-        self.lora_B[adapter_name].weight.data = Qr.contiguous()
+        self._assign_lora_weights_with_padding(adapter_name, Rr, Qr)
 
         weight_tensor.data -= scale_factor * self.lora_B[adapter_name].weight @ self.lora_A[adapter_name].weight
         weight_tensor = weight_tensor.to(dtype)
@@ -350,8 +411,7 @@ class LoraLayer(BaseTunerLayer):
 
         lora_A = torch.diag(torch.sqrt(Sr)) @ Uhr
         lora_B = Vr @ torch.diag(torch.sqrt(Sr))
-        self.lora_A[adapter_name].weight.data = lora_A
-        self.lora_B[adapter_name].weight.data = lora_B
+        self._assign_lora_weights_with_padding(adapter_name, lora_A, lora_B)
         weight = weight.data - self.scaling[adapter_name] * lora_B @ lora_A
         weight = weight.to(dtype)
         self.get_base_layer().weight.data = weight
@@ -369,8 +429,7 @@ class LoraLayer(BaseTunerLayer):
         qweight, lora_A, lora_B = loftq_init(weight, **kwargs)
         if adapter_name in self.lora_A.keys():
             # initialize A the same way as the default for nn.Linear and B to zero
-            self.lora_A[adapter_name].weight.data = lora_A
-            self.lora_B[adapter_name].weight.data = lora_B
+            self._assign_lora_weights_with_padding(adapter_name, lora_A, lora_B)
         if adapter_name in self.lora_embedding_A.keys():
             # initialize a the same way as the default for nn.linear and b to zero
             self.lora_embedding_A[adapter_name].weight.data = lora_A
