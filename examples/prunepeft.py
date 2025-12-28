@@ -53,6 +53,24 @@ def _parse_json_dict(maybe_json_or_dict, *, field_name: str) -> dict:
         return v
     raise ValueError(f"{field_name} must be dict or JSON string, got type={type(maybe_json_or_dict)}")
 
+def _parse_zero_pad_bucket_ranks(v) -> list[int] | None:
+    """
+    Accept:
+    - "" / None -> None (keep config default)
+    - "8,16,32,64" -> [8,16,32,64]
+    - list/tuple -> list[int]
+    """
+    if v is None:
+        return None
+    if isinstance(v, (list, tuple)):
+        return [int(x) for x in v if str(x).strip() != ""]
+    if isinstance(v, str):
+        s = v.strip()
+        if s == "":
+            return None
+        return [int(x.strip()) for x in s.split(",") if x.strip() != ""]
+    raise ValueError(f"zero_pad_bucket_ranks must be comma-separated str or list[int], got type={type(v)}")
+
 
 def create_prunepeft_config(model, **kwargs):
     """
@@ -107,6 +125,8 @@ def create_prunepeft_config(model, **kwargs):
             # Filter out empty strings and convert to int
             lora_layers = [int(x) for x in lora_layers_input if str(x).strip()]
 
+    zero_pad_bucket_ranks_parsed = _parse_zero_pad_bucket_ranks(kwargs.get("zero_pad_bucket_ranks", None))
+
     config_kwargs = {
         "task_type": "CAUSAL_LM",
         "adapter_types": adapter_types,
@@ -120,6 +140,9 @@ def create_prunepeft_config(model, **kwargs):
         # Optional zero-padding to unify LoRA ranks
         "zero_pad_to_max_rank": bool(kwargs.get("zero_pad_to_max_rank", False)),
         "zero_pad_rank": int(kwargs.get("zero_pad_rank", 0) or 0),
+        "zero_pad_mode": str(kwargs.get("zero_pad_mode", "none")),
+        # None -> keep config default; list -> override (avoid passing None into dataclass)
+        **({} if zero_pad_bucket_ranks_parsed is None else {"zero_pad_bucket_ranks": zero_pad_bucket_ranks_parsed}),
     }
 
     # Add parameters for all adapter types
@@ -161,6 +184,8 @@ def main(
     reload_after_train=True,
     zero_pad_to_max_rank=False,
     zero_pad_rank=0,
+    zero_pad_mode="none",
+    zero_pad_bucket_ranks="",
 ):
     """
     Main training function for PrunePEFT.
@@ -235,6 +260,8 @@ def main(
         alpha_pattern=alpha_pattern,
         zero_pad_to_max_rank=bool(zero_pad_to_max_rank),
         zero_pad_rank=int(zero_pad_rank) if str(zero_pad_rank).strip() else 0,
+        zero_pad_mode=zero_pad_mode,
+        zero_pad_bucket_ranks=zero_pad_bucket_ranks,
     )
 
     logger.info("PrunePEFT (%s) 配置:", ",".join(adapter_types).upper())

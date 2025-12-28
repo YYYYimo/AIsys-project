@@ -72,6 +72,17 @@ class PrunePEFTConfig(PeftConfig):
             "help": "List of layer indices to apply LoRA adapter (linear-level). If None, applies to all layers."
         },
     )
+    zero_pad_mode: Literal["none", "max", "bucket"] = field(
+        default="none",
+        metadata={
+            "help": (
+                "Zero-padding strategy to unify LoRA ranks: "
+                "'none' disables padding; "
+                "'max' pads all LoRA layers to a unified rank (global max); "
+                "'bucket' pads each layer to the smallest rank in `zero_pad_bucket_ranks` that is >= its requested rank."
+            )
+        },
+    )
     zero_pad_to_max_rank: bool = field(
         default=False,
         metadata={
@@ -87,6 +98,15 @@ class PrunePEFTConfig(PeftConfig):
             "help": (
                 "If >0, force the unified (padded) LoRA rank to this value. "
                 "If 0 and zero_pad_to_max_rank=True, the max rank from rank_pattern / r is used."
+            )
+        },
+    )
+    zero_pad_bucket_ranks: list[int] = field(
+        default_factory=lambda: [8, 16, 32, 64],
+        metadata={
+            "help": (
+                "Candidate bucket ranks used when zero_pad_mode='bucket'. "
+                "Ranks should be positive integers, usually a small set like [8,16,32,64]."
             )
         },
     )
@@ -198,6 +218,23 @@ class PrunePEFTConfig(PeftConfig):
         self.target_modules = (
             set(self.target_modules) if isinstance(self.target_modules, list) else self.target_modules
         )
+
+        # Backward compat: if legacy flag is enabled, treat as mode='max'
+        if self.zero_pad_to_max_rank and self.zero_pad_mode == "none":
+            self.zero_pad_mode = "max"
+
+        # Validate padding config
+        if self.zero_pad_mode not in ("none", "max", "bucket"):
+            raise ValueError(f"zero_pad_mode must be one of ['none','max','bucket'], got {self.zero_pad_mode}")
+        if self.zero_pad_rank < 0:
+            raise ValueError(f"zero_pad_rank must be >=0, got {self.zero_pad_rank}")
+        if self.zero_pad_mode == "bucket":
+            if not self.zero_pad_bucket_ranks:
+                raise ValueError("zero_pad_bucket_ranks cannot be empty when zero_pad_mode='bucket'")
+            if any((not isinstance(x, int)) or x <= 0 for x in self.zero_pad_bucket_ranks):
+                raise ValueError(f"zero_pad_bucket_ranks must be positive ints, got {self.zero_pad_bucket_ranks}")
+            # sort & unique
+            self.zero_pad_bucket_ranks = sorted(set(int(x) for x in self.zero_pad_bucket_ranks))
         # if target_modules is a regex expression, then layers_to_transform should be None
         if isinstance(self.target_modules, str) and self.layers_to_transform is not None:
             raise ValueError("`layers_to_transform` cannot be used when `target_modules` is a str.")

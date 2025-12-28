@@ -602,7 +602,12 @@ class PrunePEFTModel(BaseTuner):
                 if adapter_type == "lora":
                     # Optional: unify LoRA ranks by zero-padding to a fixed rank (for kernel shape uniformity)
                     pad_rank = 0
-                    if getattr(prunepeft_config, "zero_pad_to_max_rank", False):
+                    pad_mode = getattr(prunepeft_config, "zero_pad_mode", "none")
+                    # backward compat: legacy bool implies max mode
+                    if getattr(prunepeft_config, "zero_pad_to_max_rank", False) and pad_mode == "none":
+                        pad_mode = "max"
+
+                    if pad_mode == "max":
                         cfg_rank = int(getattr(prunepeft_config, "zero_pad_rank", 0) or 0)
                         if cfg_rank > 0:
                             pad_rank = cfg_rank
@@ -616,6 +621,17 @@ class PrunePEFTModel(BaseTuner):
                             ranks.append(int(getattr(prunepeft_config, "r", r)))
                             pad_rank = max(ranks)
                         pad_rank = max(int(r), int(pad_rank))
+                    elif pad_mode == "bucket":
+                        buckets = list(getattr(prunepeft_config, "zero_pad_bucket_ranks", []) or [])
+                        buckets = sorted(set(int(x) for x in buckets if int(x) > 0))
+                        if not buckets:
+                            # safe fallback: no padding
+                            pad_rank = 0
+                        else:
+                            rr = int(r)
+                            pad_rank = next((b for b in buckets if b >= rr), rr)
+                    else:
+                        pad_rank = 0
 
                     lora_kwargs = {
                         "r": r,
