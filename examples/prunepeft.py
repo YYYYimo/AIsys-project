@@ -299,8 +299,13 @@ def main(
                     continue
                 if hasattr(module, "lora_A") and isinstance(getattr(module, "lora_A", None), torch.nn.ModuleDict):
                     if "default" in module.lora_A:
-                        r_eff = module.lora_A["default"].out_features
-                        logger.info("DEBUG effective LoRA rank: %s -> r=%s", name, r_eff)
+                        # True requested rank (before padding/bucketing)
+                        r_true = None
+                        if hasattr(module, "r") and isinstance(getattr(module, "r", None), dict):
+                            r_true = module.r.get("default", None)
+                        # Allocated rank (after padding/bucketing)
+                        r_alloc = module.lora_A["default"].out_features
+                        logger.info("DEBUG LoRA ranks: %s -> r_true=%s, r_alloc=%s", name, r_true, r_alloc)
         except Exception as e:
             logger.warning("Could not verify effective LoRA ranks due to: %s", e)
 

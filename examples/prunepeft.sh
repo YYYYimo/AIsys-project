@@ -35,13 +35,14 @@ ZERO_PAD_MODE="bucket"      # none|max|bucket
 ZERO_PAD_BUCKET_RANKS="8,16,32,64"
 
 # Heterogeneous LoRA ranks (regex -> rank). Note: keys are regex strings, so we escape '.' as '\\.'.
+# NOTE: This is a JSON string. Use JSON escaping (\\.) to represent a single backslash in the final regex.
 RANK_PATTERN='{
-  "layers\\\\.2\\\\.self_attn\\\\.q_proj": 8,
-  "layers\\\\.3\\\\.self_attn\\\\.q_proj": 16,
-  "layers\\\\.4\\\\.self_attn\\\\.q_proj": 32,
-  "layers\\\\.2\\\\.self_attn\\\\.v_proj": 8,
-  "layers\\\\.3\\\\.self_attn\\\\.v_proj": 16,
-  "layers\\\\.4\\\\.self_attn\\\\.v_proj": 32
+  "layers\\.2\\.self_attn\\.base_block\\.q_proj": 8,
+  "layers\\.2\\.self_attn\\.base_block\\.v_proj": 8,
+  "layers\\.3\\.self_attn\\.q_proj": 16,
+  "layers\\.3\\.self_attn\\.v_proj": 16,
+  "layers\\.4\\.self_attn\\.q_proj": 32,
+  "layers\\.4\\.self_attn\\.v_proj": 32
 }'
 
 # Build command
