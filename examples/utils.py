@@ -244,7 +244,8 @@ def train_text_to_text_model(
     TrainingArgumentsClass = Seq2SeqTrainingArguments
     TrainerClass = LogTrainer
     output_dir = f"./results/{run_name}/{kwargs.get('seed')}"
-    training_args = TrainingArgumentsClass(
+    # Build explicit training args and merge with any user-provided training_args dict
+    explicit_args = dict(
         output_dir=output_dir,
         num_train_epochs=kwargs.get("num_train_epochs", 1),
         per_device_train_batch_size=per_device_batch_size,
@@ -255,13 +256,7 @@ def train_text_to_text_model(
         bf16=kwargs.get("bf16", False),
         gradient_checkpointing=kwargs.get("gradient_checkpointing", False),
         optim=kwargs.get("optim", "adamw_torch"),
-        # eval_strategy="steps",
-        # eval_steps=eval_steps,
-        # save_steps=eval_steps,
-        # save_strategy="steps",
         eval_strategy="epoch",
-        # eval_steps=eval_steps,  # 按epoch评估时不需要指定eval_steps
-        # save_steps=eval_steps,  # 按epoch保存时不需要指定save_steps
         save_strategy="epoch",
         save_total_limit=1,
         load_best_model_at_end=kwargs.get("load_best_model_at_end", True),
@@ -270,12 +265,18 @@ def train_text_to_text_model(
         do_eval=True,
         learning_rate=kwargs.get("learning_rate", 5e-5),
         remove_unused_columns=False,  # tokenize the dataset on the fly
-        # eval_accumulation_steps=kwargs.get("eval_accumulation_steps", real_batch_size),
         label_names=["labels"],
         seed=kwargs.get("seed", 42),
         ddp_find_unused_parameters=False,
-        **kwargs.get("training_args", {}),
     )
+
+    extra_training_args = dict(kwargs.get("training_args", {}))
+    # Remove keys that are already provided explicitly to avoid duplicate keyword errors
+    for k in list(explicit_args.keys()):
+        if k in extra_training_args:
+            extra_training_args.pop(k)
+
+    training_args = TrainingArgumentsClass(**explicit_args, **extra_training_args)
     """
     eval_accumulation_steps (int, optional) — Number of predictions steps to accumulate the output tensors for,
     before moving the results to the CPU. If left unset, the whole predictions are accumulated on GPU/NPU/TPU before being moved to the CPU 

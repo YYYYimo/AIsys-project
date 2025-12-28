@@ -6,6 +6,7 @@ Author: zzh
 
 import logging
 import os
+import json
 import torch
 from fire import Fire
 import wandb
@@ -25,6 +26,32 @@ from examples.data import DATASET_MAP
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def _parse_json_dict(maybe_json_or_dict, *, field_name: str) -> dict:
+    """
+    Fire may pass strings, dicts, tuples, etc. We accept:
+    - empty/None -> {}
+    - dict -> dict
+    - json string -> dict
+    """
+    if maybe_json_or_dict is None:
+        return {}
+    if isinstance(maybe_json_or_dict, dict):
+        return maybe_json_or_dict
+    if isinstance(maybe_json_or_dict, (list, tuple)) and len(maybe_json_or_dict) == 0:
+        return {}
+    if isinstance(maybe_json_or_dict, str):
+        s = maybe_json_or_dict.strip()
+        if s == "":
+            return {}
+        try:
+            v = json.loads(s)
+        except Exception as e:
+            raise ValueError(f"{field_name} must be a JSON object string, got: {maybe_json_or_dict!r}") from e
+        if not isinstance(v, dict):
+            raise ValueError(f"{field_name} must be a JSON object, got type={type(v)}")
+        return v
+    raise ValueError(f"{field_name} must be dict or JSON string, got type={type(maybe_json_or_dict)}")
 
 
 def create_prunepeft_config(model, **kwargs):
@@ -59,7 +86,7 @@ def create_prunepeft_config(model, **kwargs):
     # Parse layer selection lists
     adapter_layers_input = kwargs.get("adapter_layers", None)
     lora_layers_input = kwargs.get("lora_layers", None)
-    
+
     adapter_layers = None
     if adapter_layers_input:
         if isinstance(adapter_layers_input, str):
@@ -69,7 +96,7 @@ def create_prunepeft_config(model, **kwargs):
             # Fire converts comma-separated strings to tuples
             # Filter out empty strings and convert to int
             adapter_layers = [int(x) for x in adapter_layers_input if str(x).strip()]
-    
+
     lora_layers = None
     if lora_layers_input:
         if isinstance(lora_layers_input, str):
@@ -87,6 +114,9 @@ def create_prunepeft_config(model, **kwargs):
         "bias": kwargs.get("bias", "none"),
         "adapter_layers": adapter_layers,
         "lora_layers": lora_layers,
+        # Optional heterogeneous LoRA settings (regex->value maps)
+        "rank_pattern": _parse_json_dict(kwargs.get("rank_pattern", None), field_name="rank_pattern"),
+        "alpha_pattern": _parse_json_dict(kwargs.get("alpha_pattern", None), field_name="alpha_pattern"),
     }
 
     # Add parameters for all adapter types
@@ -121,6 +151,10 @@ def main(
     sample_size=128,
     seed=42,
     bias="none",
+    rank_pattern="",
+    alpha_pattern="",
+    max_length=1024,
+    max_steps=0,
 ):
     """
     Main training function for PrunePEFT.
@@ -141,11 +175,11 @@ def main(
         bias: Bias type (none/all/lora_only)
     """
     accelerator = Accelerator()
-    model_id = "/home/autopeft/LoRA-GA/ckpts/pretrained/Llama-2-7b-hf"
+    model_id = "/workspace/AIsys-project/model/Llama-2-7b-hf"
     model_type = "CausalLM"
     model_dtype = "bf16"
     dataset_name = "meta_math"
-    
+
     config = dict(
         model="llama",
         method="prunepeft",
@@ -156,9 +190,9 @@ def main(
         s=sample_size,
         sd=seed,
     )
-    
+
     wandb_name = "_".join([f"{k}={v}" for k, v in config.items()])
-    
+
     if accelerator.is_local_main_process:
         wandb.init(
             name=wandb_name,
@@ -166,7 +200,7 @@ def main(
             group="prunepeft",
             project="PrunePEFT Methods",
         )
-    
+
     model, tokenizer = initialize_text_to_text_model(
         model_id, model_type, model_dtype, flash_attention=False
     )
@@ -177,7 +211,7 @@ def main(
         logger.info(model)
 
     logger.info("创建PrunePEFT配置")
-    
+
     peft_config = create_prunepeft_config(
         model=model,
         adapter_types=adapter_types,
@@ -191,6 +225,8 @@ def main(
         lora_layers=lora_layers,
         target_modules=target_modules,
         bias=bias,
+        rank_pattern=rank_pattern,
+        alpha_pattern=alpha_pattern,
     )
 
     logger.info("PrunePEFT (%s) 配置:", ",".join(adapter_types).upper())
@@ -206,10 +242,10 @@ def main(
             logger.info("  Bottleneck adapter layers (raw input): %s", adapter_layers)
             logger.info("  Bottleneck adapter layers (config): %s", peft_config.adapter_layers)
     logger.info("  target_modules: %s", peft_config.target_modules)
-    
+
     dataset_func = DATASET_MAP[dataset_name]
     train_set, val_set, _ = dataset_func()
-    
+
     model = get_peft_model(model=model, peft_config=peft_config)
 
     save_dir = os.path.join("./snapshot", wandb_name)
@@ -219,7 +255,20 @@ def main(
         logger.info("PrunePEFT模型结构:")
         logger.info(model)
         model.print_trainable_parameters()
- 
+        # Verify heterogeneous rank_pattern took effect (especially for layer2/3/4 q_proj/v_proj)
+        try:
+            for name, module in model.named_modules():
+                if not any(k in name for k in ("model.layers.2.self_attn.", "model.layers.3.self_attn.", "model.layers.4.self_attn.")):
+                    continue
+                if not (name.endswith(".q_proj") or name.endswith(".v_proj")):
+                    continue
+                if hasattr(module, "lora_A") and isinstance(getattr(module, "lora_A", None), torch.nn.ModuleDict):
+                    if "default" in module.lora_A:
+                        r_eff = module.lora_A["default"].out_features
+                        logger.info("DEBUG effective LoRA rank: %s -> r=%s", name, r_eff)
+        except Exception as e:
+            logger.warning("Could not verify effective LoRA ranks due to: %s", e)
+
     model = train_text_to_text_model(
         run_name=os.path.join("peft_test", wandb_name),
         train_dataset=train_set,
@@ -233,7 +282,7 @@ def main(
         bf16=(model_dtype == "bf16"),
         eval_epochs=1,
         early_stopping_patience=3,
-        max_length=1024,
+        max_length=max_length,
         logging_steps=10,
         use_loraplus=False,
         loraplus_lr_ratio=None,
@@ -246,12 +295,27 @@ def main(
             max_grad_norm=1.0,
             warmup_ratio=0.03,
             weight_decay=0.0,
+            # Avoid CUDA OOM during evaluation caused by accumulating/padding/concatenating large logits on GPU.
+            # With this, evaluation only computes and reports loss.
+            prediction_loss_only=True,
+            # Optional benchmark mode: run a fixed number of steps and skip eval/save to speed up iteration.
+            **(
+                {}
+                if not max_steps or int(max_steps) <= 0
+                else dict(
+                    max_steps=int(max_steps),
+                    eval_strategy="no",
+                    save_strategy="no",
+                    do_eval=False,
+                    load_best_model_at_end=False,
+                )
+            ),
         ),
     )
-    
+
     if accelerator.is_local_main_process:
         model.save_pretrained(save_dir)
-        
+
         model, tokenizer = initialize_text_to_text_model(
             model_id, model_type, model_dtype, flash_attention=False
         )

@@ -23,10 +23,22 @@ ADAPTER_LAYERS="0,1,2"  # Layers to apply Bottleneck adapter (block-level), e.g.
 LORA_LAYERS="2,3,4"  # Layers to apply LoRA adapter (linear-level), e.g., "0,1,2"
 
 # Training parameters
-TARGET_MODULES="q_proj,v_proj,k_proj,o_proj"
+TARGET_MODULES="q_proj,v_proj"
 SAMPLE_SIZE=128
 SEED=42
 BIAS="none"
+MAX_LENGTH=256
+MAX_STEPS=10
+
+# Heterogeneous LoRA ranks (regex -> rank). Note: keys are regex strings, so we escape '.' as '\\.'.
+RANK_PATTERN='{
+  "layers\\\\.2\\\\.self_attn\\\\.q_proj": 8,
+  "layers\\\\.3\\\\.self_attn\\\\.q_proj": 16,
+  "layers\\\\.4\\\\.self_attn\\\\.q_proj": 32,
+  "layers\\\\.2\\\\.self_attn\\\\.v_proj": 8,
+  "layers\\\\.3\\\\.self_attn\\\\.v_proj": 16,
+  "layers\\\\.4\\\\.self_attn\\\\.v_proj": 32
+}'
 
 # Build command
 CMD="python examples/prunepeft.py \
@@ -40,6 +52,9 @@ CMD="python examples/prunepeft.py \
     --adapter_layers=$ADAPTER_LAYERS \
     --lora_layers=$LORA_LAYERS \
     --target_modules=$TARGET_MODULES \
+    --rank_pattern='$RANK_PATTERN' \
+    --max_length=$MAX_LENGTH \
+    --max_steps=$MAX_STEPS \
     --sample_size=$SAMPLE_SIZE \
     --seed=$SEED \
     --bias=$BIAS"

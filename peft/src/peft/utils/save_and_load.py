@@ -180,6 +180,43 @@ def get_peft_model_state_dict(
     elif config.peft_type == PeftType.FOURIERFT:
         to_return = {k: state_dict[k] for k in state_dict if "fourierft_" in k}
 
+    elif config.peft_type == PeftType.PRUNEPEFT:
+        # PrunePEFT can contain both LoRA and Bottleneck adapters. Collect both kinds of parameters.
+        to_return = {}
+        # handle LoRA part if present
+        if getattr(config, "adapter_types", None) is None or "lora" in config.adapter_types:
+            bias = getattr(config, "bias", "none")
+            if bias == "none":
+                for k in state_dict:
+                    if "lora_" in k:
+                        to_return[k] = state_dict[k]
+            elif bias == "all":
+                for k in state_dict:
+                    if "lora_" in k or "bias" in k:
+                        to_return[k] = state_dict[k]
+            elif bias == "lora_only":
+                for k in state_dict:
+                    if "lora_" in k:
+                        to_return[k] = state_dict[k]
+                        bias_name = k.split("lora_")[0] + "bias"
+                        if bias_name in state_dict:
+                            to_return[bias_name] = state_dict[bias_name]
+            else:
+                raise NotImplementedError
+
+        # handle Bottleneck part if present
+        if getattr(config, "adapter_types", None) is None or "bottleneck" in config.adapter_types:
+            for k in state_dict:
+                if "bottleneck_" in k:
+                    to_return[k] = state_dict[k]
+
+        # keep only adapter-specific keys (with adapter_name) or bias
+        to_return = {
+            k: v
+            for k, v in to_return.items()
+            if (("lora_" in k and adapter_name in k) or ("bottleneck_" in k and adapter_name in k) or ("bias" in k))
+        }
+
     elif config.peft_type == PeftType.BOTTLENECK:
         to_return = {k: state_dict[k] for k in state_dict if "bottleneck_" in k}
 
@@ -311,7 +348,30 @@ def set_peft_model_state_dict(
     else:
         state_dict = peft_model_state_dict
 
-    if config.peft_type in (
+    # Special handling for PRUNEPEFT which may contain both LoRA and Bottleneck parameters
+    if config.peft_type == PeftType.PRUNEPEFT:
+        peft_model_state_dict = {}
+        for k, v in state_dict.items():
+            if "lora_" in k:
+                suffix = k.split("lora_")[1]
+                if "." in suffix:
+                    suffix_to_replace = ".".join(suffix.split(".")[1:])
+                    k = k.replace(suffix_to_replace, f"{adapter_name}.{suffix_to_replace}")
+                else:
+                    k = f"{k}.{adapter_name}"
+                peft_model_state_dict[k] = v
+            elif "bottleneck_" in k:
+                suffix = k.split("bottleneck_")[1]
+                if "." in suffix:
+                    suffix_to_replace = ".".join(suffix.split(".")[1:])
+                    k = k.replace(suffix_to_replace, f"{adapter_name}.{suffix_to_replace}")
+                else:
+                    k = f"{k}.{adapter_name}"
+                peft_model_state_dict[k] = v
+            else:
+                peft_model_state_dict[k] = v
+
+    elif config.peft_type in (
         PeftType.LORA,
         PeftType.LOHA,
         PeftType.LOKR,

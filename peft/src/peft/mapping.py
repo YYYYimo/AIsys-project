@@ -64,6 +64,8 @@ from .tuners import (
     VeraModel,
     XLoraConfig,
     LoraGAConfig,
+    PrunePEFTConfig,
+    PrunePEFTModel,
 )
 from .tuners.tuners_utils import BaseTuner as _BaseTuner
 from .utils import _prepare_prompt_learning_config
@@ -102,6 +104,7 @@ PEFT_TYPE_TO_CONFIG_MAPPING: dict[str, type[PeftConfig]] = {
     "FOURIERFT": FourierFTConfig,
     "XLORA": XLoraConfig,
     "LORAGA": LoraGAConfig,
+    "PRUNEPEFT": PrunePEFTConfig,
 }
 
 PEFT_TYPE_TO_TUNER_MAPPING: dict[str, type[_BaseTuner]] = {
@@ -118,6 +121,7 @@ PEFT_TYPE_TO_TUNER_MAPPING: dict[str, type[_BaseTuner]] = {
     "VERA": VeraModel,
     "FOURIERFT": FourierFTModel,
     "XLORA": XLoraModel,
+    "PRUNEPEFT": PrunePEFTModel,
 }
 
 

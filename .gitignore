@@ -1,0 +1,6 @@
+model/
+results/
+snapshot/
+wandb/
+data_cache/
+*/__pycache__/
