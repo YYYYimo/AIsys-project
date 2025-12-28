@@ -155,6 +155,7 @@ def main(
     alpha_pattern="",
     max_length=1024,
     max_steps=0,
+    reload_after_train=True,
 ):
     """
     Main training function for PrunePEFT.
@@ -316,12 +317,29 @@ def main(
     if accelerator.is_local_main_process:
         model.save_pretrained(save_dir)
 
-        model, tokenizer = initialize_text_to_text_model(
-            model_id, model_type, model_dtype, flash_attention=False
-        )
-        model = PeftModel.from_pretrained(model, save_dir)
-        logger.info("最终PrunePEFT模型:")
-        logger.info(model)
+        # Benchmark mode (max_steps>0) typically only cares about training speed metrics.
+        # Reloading the adapter is optional and may fail if the runtime `peft` package
+        # does not have PRUNEPEFT registered (e.g., using pip-installed peft instead of this repo).
+        if int(max_steps) > 0:
+            reload_after_train = False
+
+        if reload_after_train:
+            try:
+                model, tokenizer = initialize_text_to_text_model(
+                    model_id, model_type, model_dtype, flash_attention=False
+                )
+                model = PeftModel.from_pretrained(model, save_dir)
+                logger.info("最终PrunePEFT模型:")
+                logger.info(model)
+            except KeyError as e:
+                logger.error(
+                    "Reload failed with KeyError=%s. This usually means your runtime `peft` package doesn't register PRUNEPEFT.\n"
+                    "Fix: ensure you're importing this repo's peft (editable install) instead of pip peft.\n"
+                    "Example: `pip uninstall peft` then `pip install -e ./peft` (from repo root).",
+                    e,
+                )
+            except Exception as e:
+                logger.error("Reload failed: %s", e)
 
 
 if __name__ == "__main__":
